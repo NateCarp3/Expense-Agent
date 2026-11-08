@@ -112,6 +112,7 @@ td select{padding:4px 6px;font-size:13px;max-width:170px}
 .desc{max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tablewrap{max-height:640px;overflow:auto;border:1px solid var(--border);border-radius:10px}
 .neg{color:var(--good-ink)}
+.amtbtn{border:none;background:none;color:inherit;font:inherit;cursor:pointer;padding:2px 4px;border-radius:5px}.amtbtn:hover{background:var(--surface-2)}
 .x{border:none;background:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 4px}
 .x:hover{color:var(--crit-ink)}
 .tag{font-size:10px;color:var(--muted);margin-left:4px;text-transform:uppercase;letter-spacing:.04em}
@@ -485,6 +486,7 @@ async function processImport(imp){
     else if(ext==='xlsx'||ext==='xls') r=await readXLSX(imp.file);
     else r=await readCSV(imp.file);
     imp.raw=r.txns; imp.note=r.note; imp.status=r.txns.length?'ready':'error';
+    if(r.txns.length&&importLooksReversed(r.txns)){ imp.flip=true; imp.note='⚠ Purchases showed up as money coming in, so signs were flipped — uncheck “Flip signs” if that’s wrong · '+imp.note; }
     if(!r.txns.length) imp.note=r.note||'No transactions found';
   }catch(e){
     console.error(e); imp.status='error';
@@ -586,7 +588,7 @@ function renderDash(){
   const avg=prev.length>=2?prev.reduce((a,x)=>a+monthSpend(x),0)/prev.length:null;
   const byCat={}, cnt={};
   for(const t of txns) if(t.d.startsWith(m)&&isSpend(t)){ byCat[t.cat]=(byCat[t.cat]||0)+t.amt; cnt[t.cat]=(cnt[t.cat]||0)+1; }
-  const catList=spendCats().map(c=>({c,v:byCat[c]||0,b:+settings.budgets[c]||0,n:cnt[c]||0})).filter(x=>x.v>0.004||x.b>0).sort((a,b)=>b.v-a.v);
+  const catList=spendCats().map(c=>({c,v:byCat[c]||0,b:+settings.budgets[c]||0,n:cnt[c]||0})).filter(x=>Math.abs(x.v)>0.004||x.b>0).sort((a,b)=>b.v-a.v);
   const maxV=Math.max(1,...catList.map(x=>x.v));
   const merch={}; for(const t of txns) if(t.d.startsWith(m)&&isSpend(t)&&t.amt>0){ merch[t.key]=(merch[t.key]||0)+t.amt; }
   const top=Object.entries(merch).sort((a,b)=>b[1]-a[1]).slice(0,8);
@@ -606,7 +608,7 @@ function renderDash(){
     <div class="card tile"><div class="label">Income</div><div class="value">${fmt0(inc)}</div><div class="sub">${inc>0?`Net ${spent<=inc?'saved':'shortfall'} ${fmt0(Math.abs(inc-spent))}`:'No income recorded'}</div></div>
     <div class="card tile"><div class="label">vs. prior ${prev.length>=2?prev.length:3}-month avg</div><div class="value">${delta==null?'—':(delta>=0?'+':'')+Math.round(delta*100)+'%'}</div><div class="sub">${avg!=null?`Avg ${fmt0(avg)} / month`:'Needs 2+ earlier months'}</div></div>
   </div>
-  ${dupCardBanner(m)}${dupBanner()}
+  ${signBanner()}${dupCardBanner(m)}${dupBanner()}
   <div class="grid two" style="margin-top:14px">
     <div class="card"><h2>Spending by category<small>click a row to see transactions</small></h2>
       <div class="cats">${catList.length?catList.map(x=>catRow(x,maxV,spent)).join(''):'<div class="muted">No spending this month.</div>'}</div>
@@ -624,6 +626,7 @@ function renderDash(){
   $('#nextM').onclick=()=>{ui.month=months[idx+1];render();};
   document.querySelectorAll('.catrow').forEach(r=>r.onclick=()=>{ ui.f={month:m,cat:r.dataset.c,acct:'all',q:'',from:'',to:''}; location.hash='transactions'; });
   drawTrend(m);
+  bindSignButtons();
   document.querySelectorAll('[data-showdups]').forEach(a=>a.onclick=()=>{ui.dups=true;ui.dupSel=null;});
   document.querySelectorAll('[data-fixpay]').forEach(b=>b.onclick=()=>{ const ids=new Set(b.dataset.fixpay.split(',')); const touched=[]; for(const t of txns) if(ids.has(t.id)){ t.cat='Transfers'; t.src='user'; settings.rules[t.key]='Transfers'; touched.push(t);} saveMonths(touched.map(t=>t.d.slice(0,7))); scheduleSave('settings'); render(); });
   document.querySelectorAll('[data-ignorepay]').forEach(b=>b.onclick=()=>{ settings.payOk=settings.payOk||{}; for(const id of b.dataset.ignorepay.split(',')) settings.payOk[id]=1; scheduleSave('settings'); render(); });
@@ -672,8 +675,8 @@ function catRow(x,maxV,total){
     bar=`<div class="track" title="${Math.round(r*100)}% of ${fmt0(x.b)} budget"><div class="fill ${cls}" style="width:${Math.min(100,r*100)}%"></div></div>`;
     sub=`of ${fmt0(x.b)}`;
   } else {
-    bar=`<div class="track"><div class="fill" style="width:${x.v/maxV*100}%"></div></div>`;
-    sub=total>0?Math.round(x.v/total*100)+'% of spend':'';
+    bar=`<div class="track"><div class="fill" style="width:${Math.max(0,x.v)/maxV*100}%"></div></div>`;
+    sub=x.v<0?'more refunds than purchases':total>0?Math.round(x.v/total*100)+'% of spend':'';
   }
   return `<div class="catrow" data-c="${esc(x.c)}" title="${x.n} transaction${x.n===1?'':'s'}"><div class="nm">${esc(x.c)}</div>${bar}<div class="amt">${fmt(x.v)}<small>${sub}${pill}</small></div></div>`;
 }
@@ -731,6 +734,38 @@ function findDupGroups(){
     return {items:g,keep:keep.id};
   }).sort((a,b)=>b.items[0].d.localeCompare(a.items[0].d));
 }
+
+// A purchase account looks reversed when most of its spending-category rows show as money in.
+function reversedAccounts(){
+  const st={};
+  for(const t of txns){ if(!isSpend(t)||t.cat==='Other') continue; const a=st[t.acct]||(st[t.acct]={neg:0,pos:0,n:0}); a.n++; if(t.amt<0) a.neg++; else a.pos++; }
+  const ok=settings.signOk||{};
+  return Object.entries(st).filter(([a,v])=>!ok[a]&&v.n>=5&&v.neg>2*v.pos).map(([a,v])=>({acct:a,...v}));
+}
+function signBanner(){
+  return reversedAccounts().map(r=>`<div class="banner warn" style="margin-top:14px"><b>Signs look reversed for “${esc(r.acct)}”.</b> ${r.neg} of ${r.n} purchases there are recorded as money coming in, so they're being subtracted from your spending instead of added.
+    <div style="margin-top:8px;display:flex;gap:8px"><button class="btn sm primary" data-flipacct="${esc(r.acct)}">Flip signs for this account</button><button class="btn sm" data-signok="${esc(r.acct)}">It's correct</button></div></div>`).join('');
+}
+async function flipAccount(acct,btn){
+  if(btn){ btn.disabled=true; btn.textContent='Fixing…'; }
+  const list=txns.filter(t=>t.acct===acct);
+  for(const t of list){ t.amt=-t.amt; if(t.src!=='user'){ const [c,src]=categorize(t); t.cat=c; t.src=src; } }
+  const unknown=list.filter(t=>!t.cat);
+  if(unknown.length&&sample){ try{ await aiCategorize(unknown); }catch(e){} }
+  for(const t of list) if(!t.cat){ t.cat='Other'; t.src=null; }
+  saveMonths(list.map(t=>t.d.slice(0,7))); scheduleSave('settings');
+  render(); alertInline(`Flipped ${list.length} transactions in “${acct}”.`);
+}
+function bindSignButtons(){
+  document.querySelectorAll('[data-flipacct]').forEach(b=>b.onclick=()=>flipAccount(b.dataset.flipacct,b));
+  document.querySelectorAll('[data-signok]').forEach(b=>b.onclick=()=>{ settings.signOk=settings.signOk||{}; settings.signOk[b.dataset.signok]=1; scheduleSave('settings'); render(); });
+}
+// At import: if recognized merchants mostly show as money in, the file's signs are reversed.
+function importLooksReversed(raw){
+  let neg=0,pos=0;
+  for(const r of raw){ const c=builtinCat({desc:r.desc,amt:Math.abs(r.amt)}); if(!c||NONSPEND.includes(c)||c==='Fees & Interest') continue; if(r.amt<0) neg++; else pos++; }
+  return neg>=3&&neg>2*pos;
+}
 function dupBanner(){
   const g=findDupGroups(); if(!g.length) return '';
   const extra=g.reduce((a,x)=>a+x.items.length-1,0);
@@ -774,6 +809,7 @@ function renderTx(){
     <label class="t2" style="font-size:12px;display:flex;gap:6px;align-items:center" title="When you change a category, apply it to every transaction from that merchant and to future imports"><input type="checkbox" id="rem" ${ui.remember?'checked':''}> Remember for merchant</label>
   </div>
   <div class="toolbar t2" style="font-size:13px"><span><b>${list.length}</b> transactions · ${fmt(outSum)} out · ${fmt(inSum)} in</span><div class="grow"></div>
+    ${f.acct!=='all'?`<span id="flipwrap"><button class="btn sm" id="flipacct">Flip signs for this account</button></span>`:''}
     ${(()=>{const n=findDupGroups().reduce((a,g)=>a+g.items.length-1,0); return n?`<button class="btn sm" id="showdups">Review ${n} possible duplicate${n>1?'s':''}</button>`:'';})()}
     ${others&&sample?`<button class="btn sm" id="reai">Ask Claude to sort ${others} “Other”</button>`:''}</div>
   <div class="card" style="padding:0"><div class="tablewrap"><table>
@@ -783,7 +819,7 @@ function renderTx(){
       <td class="desc" title="${esc(t.desc)}">${esc(t.desc)}</td>
       <td class="t2" style="white-space:nowrap">${esc(t.acct)}</td>
       <td><select class="cs">${settings.categories.map(c=>`<option ${t.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${t.src==='ai'?'<span class="tag" title="Categorized by Claude">ai</span>':''}</td>
-      <td class="num ${t.amt<0?'neg':''}">${t.amt<0?'+'+fmt(-t.amt):fmt(t.amt)}</td>
+      <td class="num ${t.amt<0?'neg':''}"><button class="amtbtn" title="Click to switch between money out and money in">${t.amt<0?'+'+fmt(-t.amt):fmt(t.amt)}</button></td>
       <td><button class="x" title="Delete transaction">×</button></td></tr>`).join('')}</tbody>
   </table></div></div>
   ${list.length>shown.length?`<div class="muted" style="margin-top:8px">Showing the first ${shown.length}. Narrow the filters to see more.</div>`:''}
@@ -792,6 +828,7 @@ function renderTx(){
   $('#ffrom').onchange=e=>{ui.f.from=e.target.value; if(e.target.value) ui.f.month='all'; renderTx();}; $('#fto').onchange=e=>{ui.f.to=e.target.value; if(e.target.value) ui.f.month='all'; renderTx();};
   $('#fm').onchange=e=>set('month',e.target.value); $('#fc').onchange=e=>set('cat',e.target.value); $('#fa').onchange=e=>set('acct',e.target.value);
   let qt; $('#fq').oninput=e=>{clearTimeout(qt);qt=setTimeout(()=>{ui.f.q=e.target.value;renderTx();const i=$('#fq');i.focus();i.setSelectionRange(i.value.length,i.value.length);},250);};
+  if($('#flipacct')) $('#flipacct').onclick=()=>{ $('#flipwrap').innerHTML=`<span class="inline-confirm">Flip all ${txns.filter(t=>t.acct===f.acct).length} transactions in “${esc(f.acct)}”? <button class="btn sm primary" id="fy">Flip</button><button class="btn sm" id="fn">Cancel</button></span>`; $('#fn').onclick=renderTx; $('#fy').onclick=e=>flipAccount(f.acct,e.target); };
   if($('#showdups')) $('#showdups').onclick=()=>{ui.dups=true;ui.dupSel=null;renderDups();};
   $('#rem').onchange=e=>ui.remember=e.target.checked;
   if($('#reai')) $('#reai').onclick=async e=>{ e.target.disabled=true; e.target.textContent='Sorting…'; const ot=txns.filter(t=>t.cat==='Other'&&t.src!=='user'); try{ await aiCategorize(ot); }catch(err){ alertInline('Claude couldn’t sort these right now.'); } saveMonths(ot.map(t=>t.d.slice(0,7))); scheduleSave('settings'); renderTx(); };
@@ -803,6 +840,7 @@ function renderTx(){
       t.cat=c; t.src='user'; saveMonths(touched.map(o=>o.d.slice(0,7)));
       if(touched.length>1) renderTx();
     };
+    tr.querySelector('.amtbtn').onclick=()=>{ t.amt=-t.amt; t.src=t.src==='user'?'user':t.src; saveMonths([t.d.slice(0,7)]); renderTx(); };
     tr.querySelector('.x').onclick=()=>{ txns=txns.filter(x=>x!==t); saveMonths([t.d.slice(0,7)]); tr.remove(); };
   });
 }
