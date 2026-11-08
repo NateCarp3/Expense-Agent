@@ -533,27 +533,32 @@ async function commitImport(imp){
 async function aiCategorize(list){
   const groups={};
   for(const t of list){ const g=groups[t.key]||(groups[t.key]={key:t.key,example:t.desc,dir:t.amt<0?'in':'out',items:[]}); g.items.push(t); }
-  const keys=Object.keys(groups); const cats=settings.categories;
-  for(let i=0;i<keys.length;i+=80){
-    const batch=keys.slice(i,i+80).map(k=>({key:k,example:groups[k].example.slice(0,80),dir:groups[k].dir}));
-    const prompt=`Categorize personal bank and credit card transactions for a budgeting app.
+  const cats=settings.categories;
+  const norm=c=>{ if(typeof c!=='string') return null; const x=c.trim().toLowerCase().replace(/\s+and\s+/g,' & '); return cats.find(k=>k.toLowerCase()===x)||null; };
+  const apply=(g,c)=>{ if(c!=='Other') settings.auto[g.key]=c; for(const t of g.items){ t.cat=c; t.src='ai'; } };
+  let pending=Object.values(groups);
+  for(let attempt=0; attempt<2 && pending.length; attempt++){
+    const missed=[];
+    for(let i=0;i<pending.length;i+=40){
+      const batch=pending.slice(i,i+40);
+      const items=batch.map((g,n)=>`${n}\t${g.dir}\t${g.example.slice(0,90)}`).join('\n');
+      const prompt=`Categorize personal bank and credit card transactions for a budgeting app.
 Allowed categories (use these exact names): ${cats.join(', ')}.
 - "Income" = money received (paychecks, deposits, interest, reimbursements).
 - "Transfers" = moving money between the person's own accounts, or paying a credit card bill. Peer payments (Venmo, Zelle, Cash App) go to "Transfers" unless the description makes the purpose clear.
-- Refunds (dir "in" from a merchant) go to that merchant's normal category.
-- Use "Other" only when you genuinely can't tell.
-Each item has: key (normalized merchant), example (raw description), dir ("out" = money spent, "in" = money received).
-Return JSON only: {"map":{"<key>":"<Category>"}}
+- Refunds ("in" from a merchant) go to that merchant's normal category.
+- Pick the most likely category from the merchant name; use "Other" only when there's truly no clue.
 
-Items:
-${JSON.stringify(batch)}`;
-    const v=await askJSON(prompt,{modelTier:'quick'});
-    const map=v.map||{};
-    for(const k of Object.keys(map)){
-      const c=map[k]; if(!groups[k]||!cats.includes(c)) continue;
-      if(c!=='Other') settings.auto[k]=c;
-      for(const t of groups[k].items){ t.cat=c; t.src='ai'; }
+Each line is: id <tab> direction ("out" = spent, "in" = received) <tab> description.
+${items}
+
+Return JSON only, with a category for EVERY id from 0 to ${batch.length-1}: {"c":{"0":"Category","1":"Category",...}}`;
+      let v=null;
+      try{ v=await askJSON(prompt,{modelTier:'default'}); }catch(e){ if(e&&(e.code==='not_granted'||e.code==='rate_limited')) throw e; }
+      const map=(v&&(v.c||v.map||v.categories))||{};
+      batch.forEach((g,n)=>{ const c=norm(map[n]??map[String(n)]); if(c) apply(g,c); else missed.push(g); });
     }
+    pending=missed;
   }
 }
 
