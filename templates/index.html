@@ -283,7 +283,8 @@ function categorize(t){
   return [null,null];
 }
 const spendCats = () => settings.categories.filter(c=>!NONSPEND.includes(c));
-const isSpend = t => !NONSPEND.includes(t.cat);
+// money coming in only reduces spending when it's a refund in a real category; unsorted money in is set aside
+const isSpend = t => !NONSPEND.includes(t.cat) && !(t.cat==='Other' && t.amt<0);
 function monthsWithData(){ return [...new Set(txns.map(t=>t.d.slice(0,7)))].sort(); }
 function latestMonth(){ const m=monthsWithData(); return m.length?m[m.length-1]:new Date().toISOString().slice(0,7); }
 function shiftMonth(m,k){ let [y,mm]=m.split('-').map(Number); mm+=k; while(mm<1){mm+=12;y--;} while(mm>12){mm-=12;y++;} return y+'-'+String(mm).padStart(2,'0'); }
@@ -548,7 +549,7 @@ async function aiCategorize(list){
 Allowed categories (use these exact names): ${cats.join(', ')}.
 - "Income" = money received (paychecks, deposits, interest, reimbursements).
 - "Transfers" = moving money between the person's own accounts, or paying a credit card bill. Peer payments (Venmo, Zelle, Cash App) go to "Transfers" unless the description makes the purpose clear.
-- Refunds ("in" from a merchant) go to that merchant's normal category.
+- Refunds ("in" from a merchant) go to that merchant's normal category. Other money received ("in") that isn't a refund is "Income" (payments, deposits, reimbursements) or "Transfers" (from the person's own accounts) — never "Other".
 - Pick the most likely category from the merchant name; use "Other" only when there's truly no clue.
 
 Each line is: id <tab> direction ("out" = spent, "in" = received) <tab> description.
@@ -627,6 +628,7 @@ function renderDash(){
   document.querySelectorAll('.catrow').forEach(r=>r.onclick=()=>{ ui.f={month:m,cat:r.dataset.c,acct:'all',q:'',from:'',to:''}; location.hash='transactions'; });
   drawTrend(m);
   bindSignButtons();
+  document.querySelectorAll('[data-otherin]').forEach(a=>a.onclick=()=>{ ui.f={month:m,cat:'Other',acct:'all',q:'',from:'',to:''}; });
   document.querySelectorAll('[data-showdups]').forEach(a=>a.onclick=()=>{ui.dups=true;ui.dupSel=null;});
   document.querySelectorAll('[data-fixpay]').forEach(b=>b.onclick=()=>{ const ids=new Set(b.dataset.fixpay.split(',')); const touched=[]; for(const t of txns) if(ids.has(t.id)){ t.cat='Transfers'; t.src='user'; settings.rules[t.key]='Transfers'; touched.push(t);} saveMonths(touched.map(t=>t.d.slice(0,7))); scheduleSave('settings'); render(); });
   document.querySelectorAll('[data-ignorepay]').forEach(b=>b.onclick=()=>{ settings.payOk=settings.payOk||{}; for(const id of b.dataset.ignorepay.split(',')) settings.payOk[id]=1; scheduleSave('settings'); render(); });
@@ -645,9 +647,10 @@ function dupCardBanner(m){
   <div style="margin-top:8px;display:flex;gap:8px"><button class="btn sm primary" data-fixpay="${ids}">Mark as transfers</button><button class="btn sm" data-ignorepay="${ids}">They're real spending</button></div></div>`;
 }
 function breakdownCard(m){
-  let purch=0,refund=0,xfer=0,xferN=0,inc=0; const byAcct={};
+  let purch=0,refund=0,xfer=0,xferN=0,inc=0,oin=0,oinN=0,cardPay=0; const byAcct={};
   for(const t of txns){ if(!t.d.startsWith(m)) continue;
-    if(t.cat==='Transfers'){ xfer+=Math.abs(t.amt); xferN++; continue; }
+    if(t.cat==='Transfers'){ xfer+=Math.abs(t.amt); xferN++; if(t.amt>0) cardPay+=t.amt; continue; }
+    if(t.cat==='Other'&&t.amt<0){ oin-=t.amt; oinN++; continue; }
     if(t.cat==='Income'){ inc-=t.amt; continue; }
     if(t.amt>0) purch+=t.amt; else refund-=t.amt;
     byAcct[t.acct]=(byAcct[t.acct]||0)+t.amt; }
@@ -660,7 +663,10 @@ function breakdownCard(m){
     <div class="muted" style="font-size:12px;margin:10px 0 2px">Not counted as spending</div>
     ${row(`Transfers & card payments (${xferN})`,fmt(xfer),'t2')}
     ${row('Income',fmt(inc),'t2')}
+    ${oinN?row(`<a href="#transactions" data-otherin>Unsorted money in (${oinN})</a>`,fmt(oin),'t2'):''}
     ${accts.length>1?`<div class="muted" style="font-size:12px;margin:10px 0 2px">Spent by account</div>${accts.map(([a,v])=>row(esc(a),fmt(v),'t2')).join('')}`:''}
+    ${oinN?`<div class="muted" style="font-size:12px;margin-top:8px">Unsorted money in is left out of spending. Click it to sort each one into Income, Transfers, or — if it's a refund — the category of the purchase.</div>`:''}
+    ${cardPay>purch?`<div class="banner" style="margin-top:10px;font-size:12px">${fmt(cardPay)} went out as transfers or card payments this month — more than the purchases recorded. If you haven't imported those credit card statements, that spending isn't counted yet. Upload them, or mark the payments as spending.</div>`:''}
     <div class="muted" style="font-size:12px;margin-top:10px">Statements run on billing cycles (e.g. Oct 15 – Nov 14), so a calendar month won't match one statement. To check a statement, use <a href="#transactions" id="recon">Transactions</a> with its account and dates — the “out” total should match its purchases.</div>
   </div>`;
 }
