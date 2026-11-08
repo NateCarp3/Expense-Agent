@@ -83,7 +83,9 @@ def logout():
 @app.get("/")
 @login_required
 def index():
-    return send_from_directory(app.template_folder, "index.html")
+    resp = send_from_directory(app.template_folder, "index.html")
+    resp.headers["Cache-Control"] = "no-store"  # always load the latest version after a deploy
+    return resp
 
 
 @app.get("/healthz")
