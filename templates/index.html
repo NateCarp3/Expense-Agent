@@ -738,7 +738,7 @@ function findDupGroups(){
 // A purchase account looks reversed when most of its spending-category rows show as money in.
 function reversedAccounts(){
   const st={};
-  for(const t of txns){ if(!isSpend(t)||t.cat==='Other') continue; const a=st[t.acct]||(st[t.acct]={neg:0,pos:0,n:0}); a.n++; if(t.amt<0) a.neg++; else a.pos++; }
+  for(const t of txns){ if(!isSpend(t)) continue; const a=st[t.acct]||(st[t.acct]={neg:0,pos:0,n:0}); a.n++; if(t.amt<0) a.neg++; else a.pos++; }
   const ok=settings.signOk||{};
   return Object.entries(st).filter(([a,v])=>!ok[a]&&v.n>=5&&v.neg>2*v.pos).map(([a,v])=>({acct:a,...v}));
 }
